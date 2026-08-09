@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ============================================================
+     OWASP Dependency-Check - False Positive Suppressions
+     ============================================================
+     Documentación: https://jeremylong.github.io/DependencyCheck/general/suppression.html
+
+     Cómo agregar una supresión:
+     1. Identifica el FP en el reporte HTML
+     2. Busca el CVE en https://nvd.nist.gov/vuln/search
+     3. Verifica que NO es explotable en tu contexto (vector, configuración)
+     4. Agrega la entrada abajo con una justificación clara
+     5. Fecha de revisión: revisar cada 3 meses
+
+     Formato de supresión:
+     <suppress>
+        <notes>RAZÓN detallada de por qué es FP</notes>
+        <cve>CVE-XXXX-XXXXX</cve>
+     </suppress>
+
+     O para suprimir por paquete:
+     <suppress>
+        <notes>RAZÓN</notes>
+        <packageUrl regex="true">pkg:composer/.*@.*</packageUrl>
+        <cve>CVE-XXXX-XXXXX</cve>
+     </suppress>
+     ============================================================ -->
+
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+    <!-- ============================================================
+         EJEMPLOS COMENTADOS - Descomenta los que apliquen a tu caso
+         ============================================================ -->
+
+    <!--
+    Ejemplo 1: CVE en dependencia que no se usa en runtime
+    Solo se usa en entorno dev/build, nunca en producción.
+
+    <suppress>
+        <notes><![CDATA[
+            FP confirmado: phpunit/phpunit solo se usa en tests.
+            El vector de ataque requiere acceso al entorno de desarrollo.
+            No se despliega en producción.
+            Revisado: 2026-08-08 | Revisar en: 2026-11-08
+        ]]></notes>
+        <packageUrl regex="true">pkg:composer/phpunit/phpunit@.*</packageUrl>
+        <cve>CVE-2020-XXXX</cve>
+    </suppress>
+    -->
+
+    <!--
+    Ejemplo 2: CVE en PHPMailer que requiere una configuración específica
+    que NO existe en este proyecto.
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2017-5223 requiere que el atacante pueda controlar
+            la ruta de un archivo adjunto. En NotesApp, PHPMailer
+            no se usa con archivos adjuntos de usuario.
+            Revisado: 2026-08-08 | Revisar en: 2026-11-08
+        ]]></notes>
+        <cve>CVE-2017-5223</cve>
+    </suppress>
+    -->
+
+    <!--
+    Ejemplo 3: Falso positivo en biblioteca del sistema operativo,
+    no en la dependencia real.
+
+    <suppress>
+        <notes><![CDATA[
+            Este CVE afecta a libxml2 del sistema operativo,
+            no a la dependencia PHP. El parche se aplica a nivel
+            de contenedor base (apt-get upgrade).
+            Revisado: 2026-08-08 | Revisar en: 2026-11-08
+        ]]></notes>
+        <cve>CVE-2022-40303</cve>
+    </suppress>
+    -->
+
+    <!--
+    Ejemplo 4: CVE en dependencia transitiva de una herramienta
+    que no se ejecuta en el mismo proceso que la app.
+
+    <suppress>
+        <notes><![CDATA[
+            php-stan/php-stan es una herramienta de análisis estático
+            que solo se ejecuta en CI. No se incluye en la imagen Docker
+            de producción.
+            Revisado: 2026-08-08 | Revisar en: 2026-11-08
+        ]]></notes>
+        <packageUrl regex="true">pkg:composer/phpstan/.*@.*</packageUrl>
+        <cpe>cpe:/a:phpstan:phpstan</cpe>
+    </suppress>
+    -->
+
+    <!--
+    Ejemplo 5: CVE en dompdf que requiere una configuración específica
+    ($isRemoteEnabled = true) que NO está activada en NotesApp.
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2022-2400 (SSRF en dompdf) requiere que isRemoteEnabled
+            esté activado. En NotesApp, dompdf se usaría solo con
+            archivos locales, sin fetch remoto.
+            Revisado: 2026-08-08 | Revisar en: 2026-11-08
+        ]]></notes>
+        <cve>CVE-2022-2400</cve>
+    </suppress>
+    -->
+
+</suppressions>

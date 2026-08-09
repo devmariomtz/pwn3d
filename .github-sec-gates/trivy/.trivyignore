@@ -1,0 +1,54 @@
+# ============================================================
+# Trivy - Ignore List (.trivyignore)
+# ============================================================
+# Documentación: https://aquasecurity.github.io/trivy/latest/docs/configuration/filtering/#trivyignore
+#
+# CVEs que fueron revisados manualmente y se determinó que:
+# - No son explotables en nuestro contexto (vector no alcanzable)
+# - El fix rompe compatibilidad y hay mitigación alternativa (WAF, red, etc.)
+# - Son falsos positivos confirmados
+#
+# Proceso para agregar una entrada:
+# 1. Identificar el CVE en el reporte de Trivy
+# 2. Investigar en https://nvd.nist.gov/vuln/search
+# 3. Confirmar que NO aplica a nuestro despliegue
+# 4. Agregar el ID abajo con comentario de justificación
+# 5. Fecha de expiración: revisar cada 90 días
+# ============================================================
+
+# ============================================================
+# EJEMPLOS COMENTADOS — Descomenta los que apliquen
+# ============================================================
+
+# --- PHP base image CVEs (no explotables en nuestro stack) ---
+# Estos CVEs afectan a extensiones PHP que NO usamos en NotesApp.
+# La app solo usa SQLite + Apache. No hay PostgreSQL, MySQL, etc.
+
+# CVE-2024-XXXX  # pgsql extension — no usamos PostgreSQL en PHP runtime
+# CVE-2023-XXXX  # mysqlnd extension — no usamos MySQL en PHP runtime
+
+
+# --- CVEs en el sistema operativo base (Debian) ---
+# Afectan a paquetes del SO que no interactúan con nuestra app.
+# El vector de ataque requiere acceso local al contenedor.
+
+# CVE-2023-XXXX  # libgnutls — no exponemos TLS desde PHP, Apache maneja TLS
+# CVE-2024-XXXX  # tar/gzip — no se usa en runtime, solo en build
+
+
+# --- CVEs en dependencias de build (no en la imagen final) ---
+# Estos paquetes se usan para compilar extensiones PHP en tiempo de build.
+# No están presentes en el contenedor en runtime.
+
+# CVE-2022-XXXX  # gcc — solo presente en etapa de build
+# CVE-2023-XXXX  # make — solo presente en etapa de build
+
+
+# ============================================================
+# Formato:
+#   CVE-YYYY-NNNNN    # Justificación breve
+#
+# También se puede ignorar por ID de vulnerabilidad de Trivy:
+#   # CUSTOM-ID
+#   # package@version
+# ============================================================

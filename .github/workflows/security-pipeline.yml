@@ -1,0 +1,548 @@
+# ============================================================
+# NotesApp - CI/CD Security Pipeline (GitHub Actions)
+# ============================================================
+# Se ejecuta en cada push y pull request a main.
+#
+# Stages:
+#   1. Checkout             → Pull del repo
+#   2. OWASP Dependency-Check → Escaneo de CVE en dependencias
+#   3. Trivy FS Scan        → Vulnerabilidades en código + deps
+#   4. Trivy Config Scan    → Misconfig en Dockerfile, YAML, etc.
+#   5. SonarQube (SonarCloud)→ SAST, code smells, bugs
+#   6. Docker Build         → Build de imagen
+#   7. Docker Push          → Push a GHCR (solo en main)
+# ============================================================
+
+name: Security Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  # Permite ejecución manual desde la UI de GitHub
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: notesapp
+
+jobs:
+
+  # ============================================================
+  # Job 1: OWASP Dependency-Check
+  # ============================================================
+  dependency-check:
+    name: OWASP Dependency-Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java (requerido por Dependency-Check)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup PHP + Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          tools: composer
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist 2>/dev/null || true
+
+      - name: Run OWASP Dependency-Check
+        run: |
+          mkdir -p reports/dependency-check
+
+          # Download Dependency-Check CLI
+          wget -q https://github.com/jeremylong/DependencyCheck/releases/download/v12.1.0/dependency-check-12.1.0-release.zip
+          unzip -q dependency-check-12.1.0-release.zip -d /tmp/dependency-check
+
+          # Run scan
+          /tmp/dependency-check/dependency-check/bin/dependency-check.sh \
+            --scan ./composer.lock \
+            --scan ./composer.json \
+            --format HTML \
+            --format JSON \
+            --prettyPrint \
+            --failOnCVSS 7 \
+            --out reports/dependency-check/ \
+            --noupdate
+
+        continue-on-error: true
+
+      - name: Extract Dependency-Check metrics
+        if: always()
+        run: |
+          mkdir -p reports/metrics
+          python3 << 'PYEOF'
+          import json, os, glob
+
+          metrics = {"tool": "dependency-check", "cves": [], "by_severity": {}}
+
+          # Find the JSON report
+          json_files = glob.glob("reports/dependency-check/*.json")
+          if json_files:
+              with open(json_files[0]) as f:
+                  data = json.load(f)
+              for dep in data.get("dependencies", []):
+                  for vuln in dep.get("vulnerabilities", []):
+                      sev = vuln.get("severity", "UNKNOWN").upper()
+                      cve_id = vuln.get("name", "?")
+                      cvss = vuln.get("cvss", {}).get("score", 0)
+                      metrics["cves"].append({"id": cve_id, "severity": sev, "cvss": cvss, "package": dep.get("fileName", "?")})
+                      metrics["by_severity"][sev] = metrics["by_severity"].get(sev, 0) + 1
+          else:
+              metrics["cves"].append({"id": "No JSON report found", "severity": "N/A", "cvss": 0, "package": ""})
+
+          metrics["total"] = len(metrics["cves"])
+          with open("reports/metrics/metrics-dc.json", "w") as f:
+              json.dump(metrics, f, indent=2)
+          print(f"Dependency-Check metrics: {metrics['total']} CVEs → {metrics['by_severity']}")
+          PYEOF
+
+      - name: Upload Dependency-Check metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-dc
+          path: reports/metrics/metrics-dc.json
+
+      - name: Upload Dependency-Check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports/dependency-check/
+
+  # ============================================================
+  # Job 2: Trivy Security Scans
+  # ============================================================
+  trivy:
+    name: Trivy Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Trivy - Filesystem Scan (HIGH + CRITICAL)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: json
+          output: trivy-fs-report.json
+          severity: HIGH,CRITICAL
+          exit-code: 0          # No falla, solo reporta
+          skip-dirs: vendor
+
+      - name: Trivy - Config Scan (Dockerfile, YAML)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: .
+          format: json
+          output: trivy-config-report.json
+          severity: HIGH,CRITICAL
+          exit-code: 0
+
+      - name: Extract Trivy metrics
+        if: always()
+        run: |
+          mkdir -p reports/metrics
+          python3 << 'PYEOF'
+          import json, os
+
+          metrics = {"tool": "trivy", "fs_vulns": [], "config_misconfigs": [], "by_severity": {}, "by_misconfig_severity": {}}
+
+          # Parse filesystem scan
+          if os.path.exists("trivy-fs-report.json"):
+              with open("trivy-fs-report.json") as f:
+                  data = json.load(f)
+              for r in data.get("Results", []):
+                  for v in r.get("Vulnerabilities", []):
+                      sev = v.get("Severity", "UNKNOWN")
+                      entry = {
+                          "id": v.get("VulnerabilityID", "?"),
+                          "severity": sev,
+                          "pkg": v.get("PkgName", "?"),
+                          "version": v.get("InstalledVersion", "?"),
+                          "title": v.get("Title", "")[:120]
+                      }
+                      metrics["fs_vulns"].append(entry)
+                      metrics["by_severity"][sev] = metrics["by_severity"].get(sev, 0) + 1
+
+          # Parse config scan
+          if os.path.exists("trivy-config-report.json"):
+              with open("trivy-config-report.json") as f:
+                  data = json.load(f)
+              for r in data.get("Results", []):
+                  for m in r.get("Misconfigurations", []):
+                      sev = m.get("Severity", "UNKNOWN")
+                      entry = {
+                          "id": m.get("ID", "?"),
+                          "severity": sev,
+                          "title": m.get("Title", "")[:120]
+                      }
+                      metrics["config_misconfigs"].append(entry)
+                      metrics["by_misconfig_severity"][sev] = metrics["by_misconfig_severity"].get(sev, 0) + 1
+
+          metrics["total_fs"] = len(metrics["fs_vulns"])
+          metrics["total_config"] = len(metrics["config_misconfigs"])
+
+          with open("reports/metrics/metrics-trivy.json", "w") as f:
+              json.dump(metrics, f, indent=2)
+          print(f"Trivy FS: {metrics['total_fs']} vulns → {metrics['by_severity']}")
+          print(f"Trivy Config: {metrics['total_config']} misconfigs → {metrics['by_misconfig_severity']}")
+          PYEOF
+
+      - name: Upload Trivy metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-trivy
+          path: reports/metrics/metrics-trivy.json
+
+      - name: Upload Trivy reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: trivy-*-report.json
+
+  # ============================================================
+  # Job 3: SonarQube SAST (Local Service Container)
+  # ============================================================
+  # SonarQube 10.6 LTS como service container.
+  # CERO configuración externa — no necesita tokens ni cuentas.
+  sonarqube:
+    name: SonarQube SAST
+    runs-on: ubuntu-latest
+    services:
+      sonarqube:
+        image: sonarqube:10.6.0-community    # LTS, compatible con scanner CLI 6.x
+        ports:
+          - 9000:9000
+        env:
+          SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wait for SonarQube to be ready
+        run: |
+          echo "Waiting for SonarQube 10.6 to start..."
+          for i in $(seq 1 45); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/api/system/status 2>/dev/null || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "SonarQube UP after $((i*5))s!"
+              break
+            fi
+            printf "."
+            sleep 5
+          done
+          echo ""
+          # Give it extra time for web subsystem
+          sleep 15
+
+      - name: Change admin password + Generate token
+        id: token
+        run: |
+          curl -s -X POST -u admin:admin \
+            "http://localhost:9000/api/users/change_password?login=admin&previousPassword=admin&password=admin123" \
+            || echo "(password already changed, continuing)"
+
+          TOKEN=$(curl -s -X POST -u admin:admin123 \
+            "http://localhost:9000/api/user_tokens/generate?name=github-actions" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+          echo "SonarQube token: ${TOKEN:0:10}..."
+
+          curl -s -X POST -u admin:admin123 \
+            "http://localhost:9000/api/projects/create?name=NotesApp&project=notesapp" \
+            || echo "(project already exists, continuing)"
+
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@v4
+        env:
+          SONAR_TOKEN: ${{ steps.token.outputs.token }}
+          SONAR_HOST_URL: 'http://localhost:9000'
+        with:
+          projectBaseDir: .
+          args: >
+            -Dsonar.projectKey=notesapp
+            -Dsonar.projectName=NotesApp
+
+      - name: SonarQube Quality Gate
+        uses: sonarsource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ steps.token.outputs.token }}
+          SONAR_HOST_URL: 'http://localhost:9000'
+        continue-on-error: true
+
+      - name: SonarQube Results + Export metrics
+        if: always()
+        run: |
+          echo "=============================================="
+          echo "  SonarQube Issue Summary"
+          echo "=============================================="
+
+          mkdir -p reports/metrics
+
+          python3 << 'PYEOF'
+          import json, subprocess, os
+
+          metrics = {"tool": "sonarqube", "by_severity": {}, "quality_gate": "UNKNOWN"}
+
+          def sq_api(endpoint):
+              result = subprocess.run(
+                  ["curl", "-s", "-u", "admin:admin123",
+                   f"http://localhost:9000{endpoint}"],
+                  capture_output=True, text=True, timeout=30)
+              try:
+                  return json.loads(result.stdout)
+              except:
+                  return {}
+
+          # Issues by severity
+          for sev in ["BLOCKER", "CRITICAL", "MAJOR", "MINOR", "INFO"]:
+              data = sq_api(f"/api/issues/search?componentKeys=notesapp&severities={sev}&ps=1")
+              count = data.get("total", 0)
+              metrics["by_severity"][sev] = count
+              print(f"  {sev}: {count}")
+
+          metrics["total"] = sum(metrics["by_severity"].values())
+          print(f"  TOTAL: {metrics['total']}")
+
+          # Quality Gate status
+          qg = sq_api("/api/qualitygates/project_status?projectKey=notesapp")
+          metrics["quality_gate"] = qg.get("projectStatus", {}).get("status", "N/A")
+          print(f"  Quality Gate: {metrics['quality_gate']}")
+
+          # Top 3 blocker rules
+          blockers = sq_api("/api/issues/search?componentKeys=notesapp&severities=BLOCKER&ps=3")
+          metrics["top_blockers"] = []
+          for issue in blockers.get("issues", []):
+              metrics["top_blockers"].append({
+                  "rule": issue.get("rule", "?"),
+                  "message": issue.get("message", "?")[:150],
+                  "component": issue.get("component", "?")
+              })
+
+          with open("reports/metrics/metrics-sonar.json", "w") as f:
+              json.dump(metrics, f, indent=2)
+          PYEOF
+
+      - name: Upload SonarQube metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-sonar
+          path: reports/metrics/metrics-sonar.json
+
+  # ============================================================
+  # Job 5: Docker Build & Push
+  # ============================================================
+  docker:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: [dependency-check, trivy]    # Espera a que terminen los scans
+    if: success() || failure()           # Corre incluso si los scans fallan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true                    # Carga en Docker daemon local
+          tags: ${{ env.IMAGE_NAME }}:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Push Docker image
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Export Docker metrics
+        run: |
+          mkdir -p reports/metrics
+          python3 -c "
+          import json
+          m = {
+              'tool': 'docker',
+              'image': 'ghcr.io/\${{ github.repository }}/notesapp',
+              'tag': '\${{ github.sha }}'[:7],
+              'branch': '\${{ github.ref_name }}',
+              'status': 'SUCCESS'
+          }
+          with open('reports/metrics/metrics-docker.json', 'w') as f:
+              json.dump(m, f, indent=2)
+          print(f\"Image: {m['image']}:{m['tag']}\")
+          "
+
+      - name: Upload Docker metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-docker
+          path: reports/metrics/metrics-docker.json
+
+  # ============================================================
+  # Summary — consolida métricas de todas las herramientas
+  # ============================================================
+  summary:
+    name: Pipeline Summary
+    runs-on: ubuntu-latest
+    needs: [dependency-check, trivy, sonarqube, docker]
+    if: always()
+    steps:
+      - name: Download all metrics
+        uses: actions/download-artifact@v4
+        with:
+          pattern: metrics-*
+          path: metrics
+
+      - name: Render Pipeline Summary
+        run: |
+          python3 << 'PYEOF'
+          import json, os
+
+          def load(tool):
+              f = f"metrics/metrics-{tool}/metrics-{tool}.json"
+              return json.load(open(f)) if os.path.exists(f) else None
+
+          dc  = load("dc")
+          tv  = load("trivy")
+          sq  = load("sonar")
+          dk  = load("docker")
+
+          STATUS = {
+              "dc": "${{ needs.dependency-check.result }}",
+              "trivy": "${{ needs.trivy.result }}",
+              "sonar": "${{ needs.sonarqube.result }}",
+              "docker": "${{ needs.docker.result }}"
+          }
+
+          def icon(r):
+              return "✅" if r == "success" else "❌" if r == "failure" else "⚠️"
+
+          L = []
+          L.append("## 🔒 Security Pipeline Results")
+          L.append("")
+          L.append("| Stage | Status | Findings |")
+          L.append("|-------|--------|----------|")
+
+          # Dependency-Check
+          if dc:
+              sevs = dc.get("by_severity", {})
+              s = ", ".join(f"{k}: {v}" for k, v in sorted(sevs.items()) if v)
+              L.append(f"| OWASP Dependency-Check | {icon(STATUS['dc'])} | {dc.get('total',0)} CVEs ({s}) |")
+          else:
+              L.append(f"| OWASP Dependency-Check | {icon(STATUS['dc'])} | *(no data)* |")
+
+          # Trivy
+          if tv:
+              vs = tv.get("by_severity", {})
+              ms = tv.get("by_misconfig_severity", {})
+              vs_s = ", ".join(f"{k}: {v}" for k, v in sorted(vs.items()) if v) or "-"
+              ms_s = ", ".join(f"{k}: {v}" for k, v in sorted(ms.items()) if v) or "-"
+              L.append(f"| Trivy FS + Config | {icon(STATUS['trivy'])} | FS: {tv.get('total_fs',0)} vulns ({vs_s}) / Config: {tv.get('total_config',0)} misconfigs ({ms_s}) |")
+          else:
+              L.append(f"| Trivy FS + Config | {icon(STATUS['trivy'])} | *(no data)* |")
+
+          # SonarQube
+          if sq:
+              sevs = sq.get("by_severity", {})
+              s = ", ".join(f"{k}: {v}" for k, v in sevs.items() if v)
+              L.append(f"| SonarQube SAST | {icon(STATUS['sonar'])} | {sq.get('total',0)} issues ({s}) | QG: {sq.get('quality_gate','?')} |")
+          else:
+              L.append(f"| SonarQube SAST | {icon(STATUS['sonar'])} | *(no data)* |")
+
+          # Docker
+          if dk:
+              L.append(f"| Docker Build | {icon(STATUS['docker'])} | `{dk.get('image','?')}:{dk.get('tag','?')}` |")
+          else:
+              L.append(f"| Docker Build | {icon(STATUS['docker'])} | *(no data)* |")
+
+          L.append("")
+
+          # --- Top CRITICAL CVEs (Dependency-Check) ---
+          if dc and dc.get("cves"):
+              crits = [c for c in dc["cves"] if c.get("severity") == "CRITICAL"]
+              if crits:
+                  L.append("### 🔴 Top CRITICAL CVEs (Dependency-Check)")
+                  L.append("| CVE | CVSS | Package |")
+                  L.append("|-----|------|---------|")
+                  for c in sorted(crits, key=lambda x: x.get("cvss", 0), reverse=True)[:5]:
+                      L.append(f"| {c['id']} | {c.get('cvss','?')} | {c.get('package','?')} |")
+                  L.append("")
+
+          # --- Top CRITICAL Vulns (Trivy) ---
+          if tv and tv.get("fs_vulns"):
+              crits = [v for v in tv["fs_vulns"] if v.get("severity") == "CRITICAL"][:5]
+              if crits:
+                  L.append("### 🔴 Top CRITICAL Vulns (Trivy)")
+                  L.append("| CVE | Package | Version |")
+                  L.append("|-----|---------|---------|")
+                  for v in crits:
+                      L.append(f"| {v['id']} | {v['pkg']} | {v['version']} |")
+                  L.append("")
+
+          # --- Top SonarQube Blockers ---
+          if sq and sq.get("top_blockers"):
+              L.append("### 🛑 Top BLOCKER Issues (SonarQube)")
+              L.append("| Rule | Message |")
+              L.append("|------|---------|")
+              for b in sq["top_blockers"][:3]:
+                  L.append(f"| {b['rule']} | {b['message']} |")
+              L.append("")
+
+          # --- Artifacts ---
+          L.append("### 📦 Full Reports")
+          L.append("Scroll to **Artifacts** (bottom of this page) to download:")
+          L.append("- `dependency-check-report.zip` — Full HTML+JSON report")
+          L.append("- `trivy-reports.zip` — Full Trivy JSON reports")
+          L.append("")
+          L.append("> :warning: **Expected failures** — app is intentionally vulnerable. The pipeline correctly detects all security issues.")
+
+          out = "\n".join(L)
+          with open(os.environ.get("GITHUB_STEP_SUMMARY", "/dev/null"), "a") as f:
+              f.write(out)
+          print(out)
+          PYEOF

@@ -1,0 +1,68 @@
+# ============================================================
+# WARNING: This docker-compose.yml is INTENTIONALLY INSECURE.
+# Contains multiple security anti-patterns for educational purpose.
+# DO NOT use in production.
+# ============================================================
+
+version: '3.8'
+
+services:
+
+  # ===== NotesApp Web Server =====
+  web:
+    build: .
+    container_name: notesapp_web
+
+    # SECURITY ISSUE: Port exposed to all interfaces (0.0.0.0)
+    ports:
+      - "0.0.0.0:8080:80"
+
+    # SECURITY ISSUE: Hardcoded secrets in environment
+    environment:
+      - DB_HOST=localhost
+      - DB_NAME=notes
+      - DB_USER=root
+      - DB_PASSWORD=SuperSecret123!
+      - SECRET_KEY=my-very-secret-key-2024
+      - ADMIN_EMAIL=admin@notesapp.local
+      - SMTP_PASSWORD=mailpass123
+
+    # SECURITY ISSUE: No resource limits (DoS risk)
+    # SECURITY ISSUE: No security_opt configuration
+    # SECURITY ISSUE: No read_only filesystem flags
+
+    # SECURITY ISSUE: Privileged mode enabled
+    privileged: true
+
+    # SECURITY ISSUE: No network isolation - using default bridge
+    # SECURITY ISSUE: Restart always without max_attempts (can infinite loop)
+    restart: always
+
+    # SECURITY ISSUE: Mounting Docker socket (container escape)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # SECURITY ISSUE: Bind mount with no read-only flag
+      - ./data:/var/www/html/data
+      - ./uploads:/var/www/html/uploads
+
+    # SECURITY ISSUE: No healthcheck defined
+    # SECURITY ISSUE: No logging configuration (log bomb risk)
+    # SECURITY ISSUE: No cap_drop to remove unnecessary capabilities
+    # SECURITY ISSUE: pid: host not explicitly set but could be
+
+  # ===== Unused but exposes more attack surface =====
+  # SECURITY ISSUE: Additional service exposing database port to host
+  adminer:
+    image: adminer:4.8.1
+    container_name: notesapp_adminer
+
+    # SECURITY ISSUE: Exposing database management tool without auth
+    ports:
+      - "0.0.0.0:8081:8080"
+
+    # SECURITY ISSUE: Old Adminer version (4.8.1) with known vulns
+    restart: always
+
+    # SECURITY ISSUE: No network isolation
+    environment:
+      - ADMINER_DEFAULT_SERVER=web

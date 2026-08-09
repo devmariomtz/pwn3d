@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ============================================================
+     SonarQube - Custom Quality Profile (Reference)
+     ============================================================
+     Este archivo es una REFERENCIA de cómo se ve un Quality Profile
+     exportado desde SonarQube. NO se aplica automáticamente.
+
+     Flujo real para usar un perfil custom:
+     1. Ir a SonarQube → Quality Profiles → Create → "NotesApp Custom"
+     2. Elegir como padre: "Sonar way" (built-in)
+     3. Ajustar reglas según la tabla de abajo
+     4. Exportar como XML (este sería el resultado)
+     5. Asignar el perfil al proyecto "notesapp"
+
+     Reglas que se recomienda DESACTIVAR (generan FP):
+     ┌──────────────┬─────────────────────────────────┬──────────┐
+     │ Rule Key     │ Descripción                     │ Razón    │
+     ├──────────────┼─────────────────────────────────┼──────────┤
+     │ php:S1135    │ Track TODO comments             │ Ruido    │
+     │ php:S1144    │ Unused private methods          │ Posible  │
+     │              │                                 │ hook     │
+     │ php:S1067    │ Complex boolean expressions     │ Subjetivo│
+     │ php:S1066    │ Mergeable if statements         │ Estilo   │
+     │ php:S2042    │ Too many methods in class       │ Subjetivo│
+     │ php:S1192    │ String literals duplicated      │ Ruido    │
+     │ php:S112     │ Generic exceptions              │ Legacy   │
+     │ php:S3776    │ Cognitive complexity            │ Subjetivo│
+     └──────────────┴─────────────────────────────────┴──────────┘
+
+     Reglas que NUNCA se deben desactivar (seguridad):
+     ┌──────────────┬─────────────────────────────────┬──────────┐
+     │ Rule Key     │ Descripción                     │ Severidad│
+     ├──────────────┼─────────────────────────────────┼──────────┤
+     │ php:S3649    │ SQL Injection (taint)           │ BLOCKER  │
+     │ php:S5131    │ Stored XSS                      │ BLOCKER  │
+     │ php:S5135    │ Reflected XSS                   │ BLOCKER  │
+     │ php:S1523    │ Dynamic code execution (eval)   │ BLOCKER  │
+     │ php:S2083    │ Insecure file upload            │ CRITICAL │
+     │ php:S2077    │ SQL Injection (direct)          │ CRITICAL │
+     │ php:S2076    │ Command injection               │ BLOCKER  │
+     │ php:S2068    │ Hardcoded credentials           │ CRITICAL │
+     │ php:S2631    │ Regex injection                 │ CRITICAL │
+     │ php:S2255    │ Cookie without HttpOnly         │ MAJOR    │
+     │ php:S3330    │ Cookie without Secure flag      │ MAJOR    │
+     │ php:S2053    │ Weak hashing algorithm (MD5)    │ CRITICAL │
+     │ php:S4790    │ Weak hashing (SHA1, MD5)        │ CRITICAL │
+     └──────────────┴─────────────────────────────────┴──────────┘
+
+     Estructura del XML exportado por SonarQube (ejemplo):
+     ============================================================ -->
+
+<!--
+<profile>
+    <name>NotesApp Custom</name>
+    <language>php</language>
+    <rules>
+        <rule>
+            <repositoryKey>php</repositoryKey>
+            <key>S1135</key>
+            <priority>INFO</priority>
+            <parameters>
+                <parameter>
+                    <key>severity</key>
+                    <value>INFO</value>
+                </parameter>
+            </parameters>
+        </rule>
+
+        <rule>
+            <repositoryKey>php</repositoryKey>
+            <key>S3649</key>
+            <priority>BLOCKER</priority>
+        </rule>
+
+        <rule>
+            <repositoryKey>php</repositoryKey>
+            <key>S5131</key>
+            <priority>BLOCKER</priority>
+        </rule>
+
+        <rule>
+            <repositoryKey>php</repositoryKey>
+            <key>S1523</key>
+            <priority>BLOCKER</priority>
+        </rule>
+
+        <rule>
+            <repositoryKey>php</repositoryKey>
+            <key>S2068</key>
+            <priority>CRITICAL</priority>
+        </rule>
+    </rules>
+</profile>
+-->
+
+<!-- ============================================================
+     Instrucciones para importar en SonarQube:
+     1. Quality Profiles → Restore Profile
+     2. Seleccionar este archivo (sin comentarios)
+     3. Asignar al proyecto NotesApp
+     4. El próximo scan usará este perfil
+
+     NOTA: Este XML es una REFERENCIA. Para usarlo realmente:
+     - Quita los comentarios (<!-- -->)
+     - Añade todas las reglas que quieras activar
+     - Exporta un perfil real desde SonarQube como referencia
+     ============================================================ -->

@@ -1,0 +1,93 @@
+# ============================================================
+# Trivy - Custom Scan Configuration
+# ============================================================
+# Documentación: https://aquasecurity.github.io/trivy/latest/docs/references/config/
+#
+# Estrategia para reducir falsos positivos:
+# 1. Subir severity threshold → solo HIGH + CRITICAL
+# 2. Ignorar vulnerabilidades sin fix disponible (unfixed)
+# 3. Excluir directorios de build/test/vendor
+# 4. Usar .trivyignore para CVEs revisados manualmente
+# ============================================================
+
+# ----- Global -----
+quiet: false
+debug: false
+timeout: 10m
+
+# ----- Cache -----
+cache:
+  dir: /home/runner/.cache/trivy
+
+# ----- Scan -----
+scan:
+  # Solo vulnerabilidades con fix disponible (reduce FP significativamente)
+  # Si no tiene fix → la superficie de ataque ya existe y no podemos mitigarla
+  offline-scan: false
+
+  # Skip de archivos/directorios no relevantes
+  skip-dirs:
+    - vendor
+    - node_modules
+    - .git
+    - reports
+    - data
+    - uploads
+
+  skip-files:
+    - "*.min.js"
+    - "*.min.css"
+    - "*.map"
+
+# ----- Vulnerability -----
+vulnerability:
+  # Solo HIGH y CRITICAL: MEDIUM y LOW generan ruido
+  severity:
+    - HIGH
+    - CRITICAL
+
+  # Ignorar CVEs sin parche disponible
+  # Estos aparecen pero no podemos hacer nada → noise
+  ignore-unfixed: true
+
+  # Ignorar CVEs listados en .trivyignore
+  ignorefile: .github-sec-gates/trivy/.trivyignore
+
+# ----- Misconfiguration -----
+misconfiguration:
+  # Solo HIGH y CRITICAL en IaC
+  severity:
+    - HIGH
+    - CRITICAL
+
+  # Escanear solo tipos de archivo relevantes
+  scanners:
+    - dockerfile
+    - yaml
+    - json
+
+  # No escanear templates o archivos de ejemplo
+  skip-dirs:
+    - examples
+    - templates
+
+# ----- Report -----
+report:
+  # Formatos de salida
+  format: json
+
+  # Dependencias
+  dependency-tree: true
+
+# ============================================================
+# Notas sobre severity thresholds:
+#
+# CRITICAL (9.0-10.0): RCE sin auth, exposición de datos masiva
+#   → SIEMPRE bloquear
+# HIGH (7.0-8.9):    SQLi, auth bypass, path traversal
+#   → Bloquear si tiene fix disponible
+# MEDIUM (4.0-6.9):  DoS, info disclosure limitada
+#   → No bloquear, solo alertar
+# LOW (0.1-3.9):     Teóricas, difícil explotación
+#   → Ignorar en pipeline
+# ============================================================
